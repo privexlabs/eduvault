@@ -70,7 +70,7 @@ export async function POST(req) {
       .findOne({ buyerAddress, materialId })
     if (existing) {
       return NextResponse.json(
-        { message: 'Already purchased', purchase: existing },
+        { message: 'Already purchased', purchase: existing, transactionHash: existing.transactionHash },
         { status: 200 }
       )
     }
@@ -78,7 +78,7 @@ export async function POST(req) {
     const result = await db.collection('purchases').insertOne(purchaseRecord)
 
     return NextResponse.json(
-      { success: true, purchaseId: result.insertedId },
+      { success: true, purchaseId: result.insertedId, purchase: { ...purchaseRecord, _id: result.insertedId } },
       { status: 201 }
     )
   } catch (error) {

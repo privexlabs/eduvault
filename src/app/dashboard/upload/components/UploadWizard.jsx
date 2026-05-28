@@ -8,6 +8,9 @@ import { abi } from "../../../../../contracts/EduVaultAbi.js";
 import { celoSepolia } from "wagmi/chains";
 import { parseAbiItem } from "viem";
 import { useCreateMaterial, useUploadFile } from "@/hooks/api/useMaterials";
+import TransactionStatusPanel from "@/components/transactions/TransactionStatusPanel";
+import { useTransactionCenter } from "@/providers/TransactionProvider";
+import { TransactionStatus } from "@/lib/transactions/transaction";
 import { isUploadChain, SUPPORTED_CHAINS } from "@/lib/web3/chains";
 
 const contractAddress = "0x3f48520ca0d8d51345b416b5a3e083dac8790f55";
@@ -27,6 +30,14 @@ const STEPS = [
 export default function UploadWizard() {
   const { address, chainId } = useAccount();
   const { writeContract, data: txHash, error: writeError, isPending } = useWriteContract();
+  const {
+    activeTransaction,
+    beginTransaction,
+    markStatus,
+    confirmTransaction,
+    failTransaction,
+    clearTransaction,
+  } = useTransactionCenter();
   const {
     isLoading: isWaiting,
     isSuccess: isConfirmed,
@@ -142,10 +153,20 @@ export default function UploadWizard() {
   const handleSubmit = async () => {
     setError(null);
     setErrorType(null);
+    beginTransaction({
+      scope: "publish",
+      title: "Publishing material",
+      message: "Prepare the upload and approve the mint in your wallet.",
+    });
 
     if (!address) {
       setError("Please connect your wallet to mint an NFT.");
       setErrorType("wallet");
+      failTransaction(new Error("Please connect your wallet to mint an NFT."), {
+        title: "Wallet required",
+        message: "Connect your wallet before publishing this material.",
+        retryable: true,
+      });
       return;
     }
 
@@ -157,6 +178,10 @@ export default function UploadWizard() {
 
     setWorkflowState("uploading");
     setUploadProgress(0);
+    markStatus(TransactionStatus.Submitting, {
+      title: "Uploading material",
+      message: "Uploading files and preparing the mint request.",
+    });
 
     try {
       // Simulate progress for UX
@@ -189,6 +214,10 @@ export default function UploadWizard() {
 
       // 3️⃣ Mint NFT
       setWorkflowState("minting");
+      markStatus(TransactionStatus.Signing, {
+        title: "Approve mint",
+        message: "Open your wallet and approve the mint transaction.",
+      });
       writeContract({
         address: contractAddress,
         abi,
@@ -201,6 +230,11 @@ export default function UploadWizard() {
       setError(err?.message || "Upload failed. Please try again.");
       setErrorType("upload");
       setWorkflowState("failed");
+      failTransaction(err instanceof Error ? err : new Error(String(err)), {
+        title: "Publish failed",
+        message: err?.message || "Upload failed. Please try again.",
+        retryable: true,
+      });
     }
   };
 
@@ -219,8 +253,23 @@ export default function UploadWizard() {
         setErrorType("chain");
       }
       setWorkflowState("failed");
+      failTransaction(writeError instanceof Error ? writeError : new Error(String(writeError)), {
+        title: "Publish failed",
+        message: writeError?.message || "Transaction failed. Please try again.",
+        retryable: true,
+      });
     }
-  }, [writeError]);
+  }, [failTransaction, writeError]);
+
+  useEffect(() => {
+    if (txHash && !isConfirmed) {
+      markStatus(TransactionStatus.PendingConfirmation, {
+        txHash,
+        title: "Awaiting confirmation",
+        message: "The transaction was broadcast. Waiting for network confirmation.",
+      });
+    }
+  }, [isConfirmed, markStatus, txHash]);
 
   // Parse receipt on confirmation
   useEffect(() => {
@@ -249,18 +298,33 @@ export default function UploadWizard() {
         });
 
         setWorkflowState("success");
+        confirmTransaction({
+          txHash: receipt.transactionHash,
+          title: "Material published",
+          message: "Your material is now available in the marketplace.",
+        });
       } catch (err) {
         console.error("Receipt parsing error:", err);
         setError(`Mint completed but failed to parse receipt: ${err.message}`);
         setErrorType("receipt");
         setWorkflowState("failed");
+        failTransaction(err instanceof Error ? err : new Error(String(err)), {
+          title: "Confirmation failed",
+          message: err?.message || "Mint completed but we could not parse the receipt.",
+          retryable: true,
+        });
       }
     } else if (isFailed) {
       setError("Transaction failed on-chain. Please try again.");
       setErrorType("chain");
       setWorkflowState("failed");
+      failTransaction(new Error("Transaction failed on-chain. Please try again."), {
+        title: "Transaction failed",
+        message: "Transaction failed on-chain. Please try again.",
+        retryable: true,
+      });
     }
-  }, [isConfirmed, isFailed, receipt]);
+  }, [confirmTransaction, failTransaction, isConfirmed, isFailed, receipt]);
 
   const handleReset = () => {
     setTitle("");
@@ -278,6 +342,7 @@ export default function UploadWizard() {
     setErrorType(null);
     setMintResult(null);
     setUploadProgress(0);
+    clearTransaction();
   };
 
   const isSubmitting = workflowState === "uploading" || workflowState === "minting";
@@ -364,6 +429,13 @@ export default function UploadWizard() {
         </div>
       )}
 
+      <div className="px-6 mt-4">
+        <TransactionStatusPanel
+          transaction={activeTransaction}
+          onRetry={handleSubmit}
+          onClear={clearTransaction}
+        />
+      </div>
       {chainMismatch && (
         <div className="mx-6 mt-4 p-4 bg-amber-50 border border-amber-200 rounded-md">
           <div className="flex items-start gap-3">
@@ -640,6 +712,16 @@ export default function UploadWizard() {
               <>
                 <span className="animate-spin">⏳</span>
                 Uploading... ({uploadProgress}%)
+              </>
+            ) : workflowState === "minting" && isPending ? (
+              <>
+                <span className="animate-spin">⏳</span>
+                Opening wallet...
+              </>
+            ) : workflowState === "minting" && isWaiting ? (
+              <>
+                <span className="animate-spin">⏳</span>
+                Awaiting confirmation...
               </>
             ) : workflowState === "minting" ? (
               <>
