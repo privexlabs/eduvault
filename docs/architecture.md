@@ -1,5 +1,57 @@
 # EduVault Architecture
 
+This document shows the high-level data and payment flow for EduVault.
+
+## Publishing Flow (Creator)
+
+```mermaid
+flowchart LR
+  subgraph Frontend
+    A[Creator UI] --> B[Upload Metadata + File]
+  end
+  B --> C[Backend API]
+  C --> D[Pinata/IPFS]
+  C --> E[MongoDB materials collection]
+  C --> F[Soroban MaterialRegistry]
+  F -->|emit material.registered| G[Stellar RPC/Event Stream]
+  G --> H[Indexer] --> E
+```
+
+## Checkout & Entitlement Flow (Buyer)
+
+```mermaid
+sequenceDiagram
+  participant UI as Frontend
+  participant API as Backend
+  participant RPC as Stellar RPC/Soroban
+  participant Contract as PurchaseManager
+  UI->>API: request checkout
+  API->>RPC: submit transaction to Contract
+  RPC->>Contract: record purchase + emit purchase.completed
+  RPC->>Indexer: events stream
+  Indexer->>MongoDB: purchases + entitlement_cache
+  UI->>API: request material access
+  API->>MongoDB: check entitlement_cache/purchases
+  API-->>UI: grant or deny access
+```
+
+## Indexer Responsibilities
+
+- Polls Stellar RPC for events related to Soroban contracts
+- Writes sync events into `sync_events` to ensure idempotency
+- Applies event side-effects (materials, purchases, entitlement_cache)
+- On transient failures: records retry metadata in `dead_letter_events`
+- Provides a `reprocess-deadletter.mjs` script for maintainers to reprocess
+
+## Source-of-truth boundaries
+
+- On-chain (Soroban contracts): authoritative for entitlement and payments
+- MongoDB: authoritative for application catalog, caches, and derived state
+- IPFS/Pinata: authoritative for file bytes and pinned metadata content
+
+Link: see `scripts/run-stellar-indexer.mjs` and `scripts/reprocess-deadletter.mjs` for operational commands.
+# EduVault Architecture
+
 ## 1. System Goals
 
 EduVault needs to do four things reliably:
@@ -34,9 +86,11 @@ EduVault needs to do four things reliably:
 ### Prototype chain layer
 
 - EVM wallet connection via wagmi and RainbowKit
-- legacy ERC-721 proof of concept in `contracts/EduVault.sol`
+- archived ERC-721 proof of concept in `archive/legacy-evm/contracts/EduVault.sol`
 
 ## 3. Target Stellar-Native Architecture
+
+The canonical Soroban contract boundary and event model are documented in [`docs/soroban-contract-architecture.md`](soroban-contract-architecture.md).
 
 ### Off-chain components
 
@@ -58,7 +112,7 @@ EduVault needs to do four things reliably:
 
 - `MaterialRegistry`
   - stores immutable references to content metadata
-  - binds creator, price, accepted asset, and rights hash
+  - binds creator, rights hash, accepted-asset quotes, and payout shares
 - `PurchaseManager`
   - receives payment
   - records purchase entitlement
@@ -81,18 +135,20 @@ EduVault needs to do four things reliably:
   - IPFS metadata URL
   - creator wallet
   - search and visibility metadata
-- `purchases_cache`
+- `purchases`
+  - derived cache of settled purchase events
+- `entitlement_cache`
   - denormalized mirror of on-chain entitlement state for fast UI reads
 
 ### On-chain state
 
 - material identifier
 - creator account
-- accepted asset
-- price
+- accepted-asset quotes
+- payout shares
 - rights hash
 - buyer entitlement records
-- payout parameters
+- platform fee and treasury parameters
 
 ## 5. Purchase Flow
 
@@ -131,3 +187,5 @@ EduVault needs to do four things reliably:
 ## 8. Design Principle
 
 The chain should secure settlement and rights. The web application should optimize search, onboarding, and delivery. EduVault does not need to put files on-chain to benefit from Stellar.
+
+For the detailed storage model, invariants, accepted-asset rules, and event contract, use [`docs/soroban-contract-architecture.md`](soroban-contract-architecture.md) as the implementation reference.
